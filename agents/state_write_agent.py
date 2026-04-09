@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 import pandas as pd
 from datetime import datetime
+import tempfile
+import time
+import threading
 
 import nats
 import psycopg
@@ -24,44 +27,73 @@ NATS_URL   = os.getenv("NATS_URL")
 DSN        = os.getenv("POSTGRES_DSN")
 OUTPUTS    = Path("outputs")
 
+# Cross-platform file locking
+_file_lock = threading.Lock()
+
 def update_json_state(txn_id, raw_body=None, received_at=None, promised_date=None, mail_sent_at=None):
     txn_id = str(txn_id)
     if not os.path.exists(STATE_FILE): 
         log.error(f"State file missing: {STATE_FILE}")
         return
-    with open(STATE_FILE, "r") as f:
-        state = json.load(f)
     
-    if txn_id in state:
-        if raw_body is not None:
-            state[txn_id]['reply_status'] = True
-            state[txn_id]['reply_content'] = raw_body
-        if received_at is not None:
-            state[txn_id]['replied_at'] = received_at
-        if promised_date is not None:
-            state[txn_id]['promised_date'] = promised_date
-        if mail_sent_at is not None:
-            state[txn_id]['mail_status'] = True
-            state[txn_id]['mail_sent_at'] = mail_sent_at
+    # Use file locking to prevent race conditions
+    with _file_lock:
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
             
-        temp_file = STATE_FILE + ".tmp"
-        with open(temp_file, "w") as f:
-            json.dump(state, f, indent=2)
-        os.replace(temp_file, STATE_FILE)
-        log.info(f"JSON state updated for Txn: {txn_id}")
-    else:
-        log.warning(f"Txn {txn_id} not found in JSON state during update")
+            if txn_id in state:
+                if raw_body is not None:
+                    state[txn_id]['reply_status'] = True
+                    state[txn_id]['reply_content'] = raw_body
+                if received_at is not None:
+                    state[txn_id]['replied_at'] = received_at
+                if promised_date is not None:
+                    state[txn_id]['promised_date'] = promised_date
+                if mail_sent_at is not None:
+                    state[txn_id]['mail_status'] = True
+                    state[txn_id]['mail_sent_at'] = mail_sent_at
+                
+                # Write updated state atomically
+                temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(STATE_FILE))
+                try:
+                    with os.fdopen(temp_fd, "w") as temp_f:
+                        json.dump(state, temp_f, indent=2)
+                    os.replace(temp_path, STATE_FILE)
+                    log.info(f"JSON state updated for Txn: {txn_id}")
+                except Exception as e:
+                    os.unlink(temp_path)
+                    raise e
+            else:
+                log.warning(f"Txn {txn_id} not found in JSON state during update")
+        except Exception as e:
+            log.error(f"Failed to update JSON state for Txn {txn_id}: {e}")
+            raise
 
 async def update_db_sent(txn_id, sent_at, db):
     try:
+        # First verify transaction exists
+        result = await db.execute("""
+            SELECT COUNT(*) as count FROM transactions 
+            WHERE secondary_transaction_id = %s
+        """, (txn_id,))
+        count = await result.fetchone()
+        
+        if count[0] == 0:
+            log.warning(f"Transaction {txn_id} not found in database - skipping update")
+            return
+        
+        # Update the transaction
         await db.execute("""
             UPDATE transactions 
             SET reminder_sent_at = %s, reminder_count = reminder_count + 1
             WHERE secondary_transaction_id = %s
         """, (sent_at, txn_id))
         await db.commit()
+        log.info(f"Database updated for Txn: {txn_id}")
     except Exception as e:
         log.error(f"DB update sent error: {e}")
+        await db.rollback()
 
 def append_to_excel(data: dict):
     dist_id = data.get("distributor_id", "Unknown")

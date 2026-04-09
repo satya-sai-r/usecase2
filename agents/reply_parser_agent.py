@@ -66,7 +66,7 @@ async def main():
     log.info("Reply Parser Agent running...")
 
     async for msg in sub.messages:
-                try:
+        try:
             payload = json.loads(msg.data)
             txn_id = payload['transaction_id']
             state = load_state()

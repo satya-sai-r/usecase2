@@ -26,7 +26,7 @@ NATS_URL     = os.getenv("NATS_URL")
 SMTP_HOST    = os.getenv("SMTP_HOST")
 SMTP_PORT    = int(os.getenv("SMTP_PORT", "587"))
 FROM_EMAIL   = os.getenv("FROM_EMAIL")
-SMTP_PASS    = os.getenv("GMAIL_APP_PASSWORD")
+SMTP_PASS    = os.getenv("SMTP_PASS") or os.getenv("GMAIL_APP_PASSWORD")
 RETAILER_MAP = json.loads(os.getenv("RETAILER_EMAIL_MAP", "{}"))
 DEFAULT_RECIPIENT = os.getenv("DEFAULT_RECIPIENT", "spuvvala@gitam.in")
 

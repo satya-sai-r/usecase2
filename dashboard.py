@@ -19,7 +19,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 STATE_FILE = "data/system_state.json"
-NATS_URL = "nats://localhost:4222"
+NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
 
 def load_state():
     if os.path.exists(STATE_FILE):
